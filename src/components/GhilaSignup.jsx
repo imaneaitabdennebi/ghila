@@ -25,14 +25,18 @@ const PRESETS = [
   { id: 'US', dial: '+1', label: 'US', name: 'États-Unis' },
 ];
 
-/** URLs (pages publiques — remplacez par les vôtres en production) */
+/**
+ * URLs publiques.
+ * Ne pas utiliser une URL OAuth partielle (ex. /oauth/identifier?flowName=…)
+ * sans client_id : Google renvoie alors une erreur 400.
+ */
 const URLS = {
   terms: 'https://www.whatsapp.com/legal/',
   privacy: 'https://www.whatsapp.com/legal/privacy-policy',
   cookies: 'https://www.whatsapp.com/legal/cookies',
-  googleOAuth:
-    'https://accounts.google.com/signin/oauth/identifier?flowName=GeneralOAuthFlow',
-  facebookOAuth: 'https://www.facebook.com/login.php',
+  /** Page de connexion Google générique (pas un flux OAuth API incomplet) */
+  googleOAuth: 'https://accounts.google.com/',
+  facebookOAuth: 'https://www.facebook.com/login',
 };
 
 function showAppAlert(title, message) {
@@ -170,9 +174,11 @@ export default function GhilaSignup({ onClose, onAuthenticated }) {
   const [googleModalOpen, setGoogleModalOpen] = useState(false);
   const [googleAccountEmail, setGoogleAccountEmail] = useState('');
   const [googleOAuthBusy, setGoogleOAuthBusy] = useState(false);
+  const [googleFieldError, setGoogleFieldError] = useState('');
   const [facebookModalOpen, setFacebookModalOpen] = useState(false);
   const [facebookAccountEmail, setFacebookAccountEmail] = useState('');
   const [facebookOAuthBusy, setFacebookOAuthBusy] = useState(false);
+  const [facebookFieldError, setFacebookFieldError] = useState('');
 
   /** Flux WhatsApp (OTP simulé — branchez votre API / Twilio / WhatsApp Business ici) */
   const [waSending, setWaSending] = useState(false);
@@ -260,6 +266,7 @@ export default function GhilaSignup({ onClose, onAuthenticated }) {
 
   const handleGoogle = () => {
     setGoogleAccountEmail('');
+    setGoogleFieldError('');
     setGoogleModalOpen(true);
   };
 
@@ -270,9 +277,10 @@ export default function GhilaSignup({ onClose, onAuthenticated }) {
   const handleGoogleFinish = async () => {
     const v = validateEmailFormat(googleAccountEmail);
     if (!v.ok) {
-      showAppAlert('Google', v.error);
+      setGoogleFieldError(v.error);
       return;
     }
+    setGoogleFieldError('');
     setGoogleOAuthBusy(true);
     try {
       await new Promise((r) => setTimeout(r, 900));
@@ -289,6 +297,7 @@ export default function GhilaSignup({ onClose, onAuthenticated }) {
 
   const handleFacebook = () => {
     setFacebookAccountEmail('');
+    setFacebookFieldError('');
     setFacebookModalOpen(true);
   };
 
@@ -299,9 +308,10 @@ export default function GhilaSignup({ onClose, onAuthenticated }) {
   const handleFacebookFinish = async () => {
     const v = validateEmailFormat(facebookAccountEmail);
     if (!v.ok) {
-      showAppAlert('Facebook', v.error);
+      setFacebookFieldError(v.error);
       return;
     }
+    setFacebookFieldError('');
     setFacebookOAuthBusy(true);
     try {
       await new Promise((r) => setTimeout(r, 900));
@@ -707,14 +717,26 @@ export default function GhilaSignup({ onClose, onAuthenticated }) {
             </Text>
             <TextInput
               value={googleAccountEmail}
-              onChangeText={setGoogleAccountEmail}
+              onChangeText={(t) => {
+                setGoogleAccountEmail(t);
+                if (googleFieldError) setGoogleFieldError('');
+              }}
               placeholder="vous@gmail.com"
               placeholderTextColor="#a3a3a3"
               keyboardType="email-address"
               autoCapitalize="none"
               autoCorrect={false}
-              className="mb-3 h-12 rounded-xl border border-neutral-200 px-3 text-[15px] text-neutral-900"
+              className="mb-1 h-12 rounded-xl border px-3 text-[15px] text-neutral-900"
+              style={{
+                borderColor: googleFieldError ? '#dc2626' : '#e5e5e5',
+                borderWidth: 1,
+              }}
             />
+            <View className="mb-2 min-h-[18px]">
+              {googleFieldError ? (
+                <Text className="text-xs text-red-600">{googleFieldError}</Text>
+              ) : null}
+            </View>
             <Pressable
               onPress={handleGoogleOpenBrowser}
               className="mb-3 h-11 items-center justify-center rounded-full border border-neutral-200 bg-white active:bg-neutral-50"
@@ -782,14 +804,26 @@ export default function GhilaSignup({ onClose, onAuthenticated }) {
             </Text>
             <TextInput
               value={facebookAccountEmail}
-              onChangeText={setFacebookAccountEmail}
+              onChangeText={(t) => {
+                setFacebookAccountEmail(t);
+                if (facebookFieldError) setFacebookFieldError('');
+              }}
               placeholder="vous@exemple.com"
               placeholderTextColor="#a3a3a3"
               keyboardType="email-address"
               autoCapitalize="none"
               autoCorrect={false}
-              className="mb-3 h-12 rounded-xl border border-neutral-200 px-3 text-[15px] text-neutral-900"
+              className="mb-1 h-12 rounded-xl border px-3 text-[15px] text-neutral-900"
+              style={{
+                borderColor: facebookFieldError ? '#dc2626' : '#e5e5e5',
+                borderWidth: 1,
+              }}
             />
+            <View className="mb-2 min-h-[18px]">
+              {facebookFieldError ? (
+                <Text className="text-xs text-red-600">{facebookFieldError}</Text>
+              ) : null}
+            </View>
             <Pressable
               onPress={handleFacebookOpenBrowser}
               className="mb-3 h-11 items-center justify-center rounded-full border border-neutral-200 bg-white active:bg-neutral-50"
