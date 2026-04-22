@@ -22,4 +22,16 @@ export const colors = {
   glovoCloseBg: '#ECECEC',
   mutedGrey: '#6B7280',
   borderSoft: '#D8DDE0',
+  /** Maquette page d’accueil Ghila */
+  ghilaGreen: '#1A734F',
+  /** Fond écran — gris-vert très léger (moins « jaune » que l’ancien beige). */
+  homeBg: '#EDF2EF',
+  homeCardBeige: '#E8EDE9',
+  homeNotifBg: 'rgba(255,255,255,0.92)',
+  homePrice: '#B7791F',
+  homeMuted: '#64748B',
+  /** Vert plus sombre pour dégradé header */
+  homeHeaderEnd: '#134232',
+  /** Cartes blanches « flottantes » */
+  homeSurface: '#FFFFFF',
 } as const;

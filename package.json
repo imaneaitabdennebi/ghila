@@ -6,10 +6,13 @@
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "export:web": "expo export -p web",
+    "deploy:github": "expo export -p web && gh-pages -d dist --nojekyll"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
+    "@react-native-async-storage/async-storage": "2.2.0",
     "@supabase/supabase-js": "^2.103.3",
     "expo": "~54.0.33",
     "expo-linear-gradient": "~15.0.8",
@@ -24,6 +27,7 @@
     "react-native-web": "^0.21.0"
   },
   "devDependencies": {
+    "gh-pages": "^6.3.0",
     "@types/react": "~19.1.0",
     "babel-preset-expo": "^55.0.17",
     "prettier-plugin-tailwindcss": "^0.5.11",

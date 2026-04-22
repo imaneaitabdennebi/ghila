@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -15,6 +15,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import Svg, { Path } from 'react-native-svg';
+import { createClient } from '@supabase/supabase-js';
+import { GhilaSignupLogo } from './GhilaSignupLogo';
 
 /** Vert principal (maquette) */
 const GHILA_GREEN = '#1A734F';
@@ -25,19 +27,19 @@ const PRESETS = [
   { id: 'US', dial: '+1', label: 'US', name: 'États-Unis' },
 ];
 
-/**
- * URLs publiques.
- * Ne pas utiliser une URL OAuth partielle (ex. /oauth/identifier?flowName=…)
- * sans client_id : Google renvoie alors une erreur 400.
- */
+/** URLs publiques (légal). */
 const URLS = {
   terms: 'https://www.whatsapp.com/legal/',
   privacy: 'https://www.whatsapp.com/legal/privacy-policy',
   cookies: 'https://www.whatsapp.com/legal/cookies',
-  /** Page de connexion Google générique (pas un flux OAuth API incomplet) */
-  googleOAuth: 'https://accounts.google.com/',
-  facebookOAuth: 'https://www.facebook.com/login',
 };
+
+const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+const supabase =
+  SUPABASE_URL && SUPABASE_ANON_KEY
+    ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+    : null;
 
 function showAppAlert(title, message) {
   const body =
@@ -169,24 +171,33 @@ export default function GhilaSignup({ onClose, onAuthenticated }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [signupEmailErr, setSignupEmailErr] = useState('');
+  const [signupPasswordErr, setSignupPasswordErr] = useState('');
+  const [signupConfirmErr, setSignupConfirmErr] = useState('');
+  const [emailSignupBusy, setEmailSignupBusy] = useState(false);
+  const [emailLoginBusy, setEmailLoginBusy] = useState(false);
+  const [emailServerNotice, setEmailServerNotice] = useState('');
+  const [emailServerErr, setEmailServerErr] = useState('');
+  const [emailSignupSuccess, setEmailSignupSuccess] = useState(false);
+  const [emailDoneEmail, setEmailDoneEmail] = useState('');
 
-  /** OAuth Google / Facebook (démo — branchez @react-native-google-signin / FB SDK en prod) */
-  const [googleModalOpen, setGoogleModalOpen] = useState(false);
-  const [googleAccountEmail, setGoogleAccountEmail] = useState('');
-  const [googleOAuthBusy, setGoogleOAuthBusy] = useState(false);
-  const [googleFieldError, setGoogleFieldError] = useState('');
-  const [facebookModalOpen, setFacebookModalOpen] = useState(false);
-  const [facebookAccountEmail, setFacebookAccountEmail] = useState('');
-  const [facebookOAuthBusy, setFacebookOAuthBusy] = useState(false);
-  const [facebookFieldError, setFacebookFieldError] = useState('');
+  /** OAuth réel Google/Facebook */
+  const [oauthBusyProvider, setOauthBusyProvider] = useState(
+    /** @type {null | 'google' | 'facebook'} */ (null),
+  );
+  const [oauthError, setOauthError] = useState('');
+  const oauthSessionHandled = useRef(false);
 
   /** Flux WhatsApp (OTP simulé — branchez votre API / Twilio / WhatsApp Business ici) */
+  const [phoneError, setPhoneError] = useState('');
   const [waSending, setWaSending] = useState(false);
   const [otpModalOpen, setOtpModalOpen] = useState(false);
   const [otpCode, setOtpCode] = useState('');
   const [expectedOtp, setExpectedOtp] = useState('');
   const [otpPhoneE164, setOtpPhoneE164] = useState('');
   const [resendSec, setResendSec] = useState(0);
+  const [otpError, setOtpError] = useState('');
+  const [otpSuccess, setOtpSuccess] = useState(false);
 
   useEffect(() => {
     if (resendSec <= 0) return undefined;
@@ -195,6 +206,73 @@ export default function GhilaSignup({ onClose, onAuthenticated }) {
     }, 1000);
     return () => clearInterval(t);
   }, [resendSec]);
+
+  /** Succès WhatsApp : fermeture automatique + callback */
+  useEffect(() => {
+    if (!otpSuccess || !otpPhoneE164) return undefined;
+    const t = setTimeout(() => {
+      setOtpModalOpen(false);
+      setOtpSuccess(false);
+      setOtpCode('');
+      setExpectedOtp('');
+      setOtpError('');
+      onAuthenticated?.({ provider: 'whatsapp', phone: otpPhoneE164 });
+    }, 1400);
+    return () => clearTimeout(t);
+  }, [otpSuccess, otpPhoneE164, onAuthenticated]);
+
+  useEffect(() => {
+    if (!supabase) return undefined;
+    let mounted = true;
+
+    const mapProvider = (raw) => {
+      if (raw === 'google' || raw === 'facebook' || raw === 'email') return raw;
+      return 'email';
+    };
+
+    const notifyIfVerified = (session) => {
+      if (!mounted || !session?.user || oauthSessionHandled.current) return;
+      if (!session.user.email_confirmed_at) return;
+      oauthSessionHandled.current = true;
+      const provider = mapProvider(session.user.app_metadata?.provider);
+      onAuthenticated?.({ provider, email: session.user.email || undefined });
+    };
+
+    void supabase.auth.getSession().then(({ data }) => {
+      notifyIfVerified(data.session);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      notifyIfVerified(session);
+      setOauthBusyProvider(null);
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, [onAuthenticated]);
+
+  useEffect(() => {
+    if (!emailSignupSuccess || !emailDoneEmail) return undefined;
+    const t = setTimeout(() => {
+      onAuthenticated?.({ provider: 'email', email: emailDoneEmail });
+      setEmailModalOpen(false);
+      setEmailSignupSuccess(false);
+      setEmailDoneEmail('');
+      setEmail('');
+      setPassword('');
+      setConfirmPassword('');
+      setSignupEmailErr('');
+      setSignupPasswordErr('');
+      setSignupConfirmErr('');
+      setEmailServerErr('');
+      setEmailServerNotice('');
+    }, 1400);
+    return () => clearTimeout(t);
+  }, [emailSignupSuccess, emailDoneEmail, onAuthenticated]);
 
   const fullNumberDisplay = useMemo(() => {
     const v = validatePhone(prefix, phone);
@@ -208,9 +286,11 @@ export default function GhilaSignup({ onClose, onAuthenticated }) {
     async () => {
       const v = validatePhone(prefix, phone);
       if (!v.ok) {
-        showAppAlert('Numéro invalide', v.error);
+        setPhoneError(v.error);
         return;
       }
+      setPhoneError('');
+      setOtpError('');
       const code = randomSixDigitOtp();
       setWaSending(true);
       try {
@@ -219,6 +299,7 @@ export default function GhilaSignup({ onClose, onAuthenticated }) {
         setExpectedOtp(code);
         setOtpPhoneE164(v.e164);
         setOtpCode('');
+        setOtpSuccess(false);
         setOtpModalOpen(true);
         setResendSec(60);
       } finally {
@@ -242,21 +323,18 @@ export default function GhilaSignup({ onClose, onAuthenticated }) {
   };
 
   const handleVerifyOtp = () => {
+    setOtpError('');
     const entered = otpCode.replace(/\D/g, '');
     if (entered.length !== 6) {
-      showAppAlert('Code', 'Saisissez les 6 chiffres du code.');
+      setOtpError('Saisissez les 6 chiffres du code.');
       return;
     }
     if (entered !== expectedOtp) {
-      showAppAlert('Code incorrect', 'Le code ne correspond pas. Réessayez.');
+      setOtpError('Code incorrect. Réessayez.');
       return;
     }
-    setOtpModalOpen(false);
-    showAppAlert(
-      'Connexion réussie',
-      `Votre numéro ${otpPhoneE164} est vérifié.`,
-    );
-    onAuthenticated?.({ provider: 'whatsapp', phone: otpPhoneE164 });
+    setOtpError('');
+    setOtpSuccess(true);
   };
 
   const handleResendOtp = () => {
@@ -264,108 +342,151 @@ export default function GhilaSignup({ onClose, onAuthenticated }) {
     void sendWhatsAppOtp();
   };
 
-  const handleGoogle = () => {
-    setGoogleAccountEmail('');
-    setGoogleFieldError('');
-    setGoogleModalOpen(true);
-  };
-
-  const handleGoogleOpenBrowser = () => {
-    void openUrl(URLS.googleOAuth);
-  };
-
-  const handleGoogleFinish = async () => {
-    const v = validateEmailFormat(googleAccountEmail);
-    if (!v.ok) {
-      setGoogleFieldError(v.error);
+  const startOAuth = async (provider) => {
+    setOauthError('');
+    if (!supabase) {
+      setOauthError(
+        'Configuration Supabase manquante. Ajoutez EXPO_PUBLIC_SUPABASE_URL et EXPO_PUBLIC_SUPABASE_ANON_KEY.',
+      );
       return;
     }
-    setGoogleFieldError('');
-    setGoogleOAuthBusy(true);
+
+    setOauthBusyProvider(provider);
     try {
-      await new Promise((r) => setTimeout(r, 900));
-      setGoogleModalOpen(false);
-      showAppAlert(
-        'Google',
-        `Connexion réussie avec ${v.email} (démo — branchez votre OAuth Google en production).`,
-      );
-      onAuthenticated?.({ provider: 'google', email: v.email });
-    } finally {
-      setGoogleOAuthBusy(false);
+      const redirectTo =
+        Platform.OS === 'web' && typeof window !== 'undefined'
+          ? window.location.origin
+          : undefined;
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider,
+        options: redirectTo ? { redirectTo } : undefined,
+      });
+      if (error) {
+        setOauthError(error.message || `Connexion ${provider} impossible.`);
+        setOauthBusyProvider(null);
+      }
+    } catch {
+      setOauthError(`Connexion ${provider} impossible.`);
+      setOauthBusyProvider(null);
     }
+  };
+
+  const handleGoogle = () => {
+    void startOAuth('google');
   };
 
   const handleFacebook = () => {
-    setFacebookAccountEmail('');
-    setFacebookFieldError('');
-    setFacebookModalOpen(true);
+    void startOAuth('facebook');
   };
 
-  const handleFacebookOpenBrowser = () => {
-    void openUrl(URLS.facebookOAuth);
-  };
+  const handleEmailSignup = async () => {
+    setSignupEmailErr('');
+    setSignupPasswordErr('');
+    setSignupConfirmErr('');
+    setEmailServerErr('');
+    setEmailServerNotice('');
 
-  const handleFacebookFinish = async () => {
-    const v = validateEmailFormat(facebookAccountEmail);
-    if (!v.ok) {
-      setFacebookFieldError(v.error);
+    if (!supabase) {
+      setEmailServerErr(
+        'Configuration Supabase manquante. Ajoutez EXPO_PUBLIC_SUPABASE_URL et EXPO_PUBLIC_SUPABASE_ANON_KEY.',
+      );
       return;
     }
-    setFacebookFieldError('');
-    setFacebookOAuthBusy(true);
-    try {
-      await new Promise((r) => setTimeout(r, 900));
-      setFacebookModalOpen(false);
-      showAppAlert(
-        'Facebook',
-        `Connexion réussie avec ${v.email} (démo — branchez Facebook Login en production).`,
-      );
-      onAuthenticated?.({ provider: 'facebook', email: v.email });
-    } finally {
-      setFacebookOAuthBusy(false);
-    }
-  };
 
-  const handleEmailSignup = () => {
     const ev = validateEmailFormat(email);
     if (!ev.ok) {
-      showAppAlert('E-mail', ev.error);
+      setSignupEmailErr(ev.error);
       return;
     }
-    if (!password.trim() || !confirmPassword.trim()) {
-      showAppAlert('Champs requis', 'Remplissez le mot de passe et la confirmation.');
+    if (!password.trim()) {
+      setSignupPasswordErr('Saisissez un mot de passe.');
       return;
     }
     if (password.length < 8) {
-      showAppAlert('Mot de passe', 'Au moins 8 caractères.');
+      setSignupPasswordErr('Au moins 8 caractères.');
+      return;
+    }
+    if (!confirmPassword.trim()) {
+      setSignupConfirmErr('Confirmez le mot de passe.');
       return;
     }
     if (password !== confirmPassword) {
-      showAppAlert(
-        'Mots de passe',
-        'Les mots de passe ne correspondent pas.',
+      setSignupConfirmErr('Les mots de passe ne correspondent pas.');
+      return;
+    }
+    setEmailSignupBusy(true);
+    try {
+      const redirectTo =
+        Platform.OS === 'web' && typeof window !== 'undefined'
+          ? window.location.origin
+          : undefined;
+      const { error } = await supabase.auth.signUp({
+        email: ev.email,
+        password,
+        options: redirectTo ? { emailRedirectTo: redirectTo } : undefined,
+      });
+      if (error) {
+        setEmailServerErr(error.message || 'Inscription impossible.');
+        return;
+      }
+      setEmailServerNotice(
+        `Un lien de vérification a été envoyé à ${ev.email}. Vérifiez votre boîte puis connectez-vous.`,
+      );
+    } finally {
+      setEmailSignupBusy(false);
+    }
+  };
+
+  const handleEmailLoginVerified = async () => {
+    setSignupEmailErr('');
+    setSignupPasswordErr('');
+    setEmailServerErr('');
+    setEmailServerNotice('');
+
+    if (!supabase) {
+      setEmailServerErr(
+        'Configuration Supabase manquante. Ajoutez EXPO_PUBLIC_SUPABASE_URL et EXPO_PUBLIC_SUPABASE_ANON_KEY.',
       );
       return;
     }
-    setEmailModalOpen(false);
-    showAppAlert(
-      'Inscription',
-      `Compte créé pour ${ev.email} (simulation — ajoutez votre API d’inscription).`,
-    );
-    onAuthenticated?.({ provider: 'email', email: ev.email });
+
+    const ev = validateEmailFormat(email);
+    if (!ev.ok) {
+      setSignupEmailErr(ev.error);
+      return;
+    }
+    if (!password.trim()) {
+      setSignupPasswordErr('Saisissez un mot de passe.');
+      return;
+    }
+
+    setEmailLoginBusy(true);
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: ev.email,
+        password,
+      });
+      if (error) {
+        setEmailServerErr(error.message || 'Connexion impossible.');
+        return;
+      }
+      if (!data.user?.email_confirmed_at) {
+        await supabase.auth.signOut();
+        setEmailServerErr(
+          'E-mail non vérifié. Ouvrez le lien reçu par e-mail avant de vous connecter.',
+        );
+        return;
+      }
+      setEmailDoneEmail(ev.email);
+      setEmailSignupSuccess(true);
+    } finally {
+      setEmailLoginBusy(false);
+    }
   };
 
   const handleMainClose = () => {
     if (otpModalOpen) {
       setOtpModalOpen(false);
-      return;
-    }
-    if (googleModalOpen) {
-      setGoogleModalOpen(false);
-      return;
-    }
-    if (facebookModalOpen) {
-      setFacebookModalOpen(false);
       return;
     }
     if (emailModalOpen) {
@@ -393,15 +514,7 @@ export default function GhilaSignup({ onClose, onAuthenticated }) {
         >
           <View className="w-full max-w-[390px] self-center flex-1 px-5">
             <View className="flex-row items-center justify-between pt-2 pb-6">
-              <View
-                className="h-14 w-14 items-center justify-center rounded-2xl px-2"
-                style={{ backgroundColor: GHILA_GREEN }}
-              >
-                <View className="flex-row items-center gap-1">
-                  <Ionicons name="bulb-outline" size={22} color="#FFFFFF" />
-                  <Text className="text-[15px] font-bold text-white">Gh|la</Text>
-                </View>
-              </View>
+              <GhilaSignupLogo size={56} />
               <Pressable
                 onPress={handleMainClose}
                 accessibilityLabel="Fermer"
@@ -422,7 +535,10 @@ export default function GhilaSignup({ onClose, onAuthenticated }) {
             <View className="mt-8 flex-row gap-2">
               <View className="min-w-[124px] max-w-[40%] shrink-0">
                 <Pressable
-                  onPress={() => setPickerOpen(true)}
+                  onPress={() => {
+                    setPickerOpen(true);
+                    if (phoneError) setPhoneError('');
+                  }}
                   className="h-12 flex-row items-center justify-center gap-1 rounded-full border border-neutral-200 bg-white px-3 active:bg-neutral-50"
                 >
                   <Text
@@ -437,14 +553,24 @@ export default function GhilaSignup({ onClose, onAuthenticated }) {
               <View className="min-w-0 flex-1">
                 <TextInput
                   value={phone}
-                  onChangeText={setPhone}
+                  onChangeText={(t) => {
+                    setPhone(t);
+                    if (phoneError) setPhoneError('');
+                  }}
                   placeholder="Numéro de téléphone"
                   placeholderTextColor="#a3a3a3"
                   keyboardType="phone-pad"
-                  className="h-12 rounded-full border border-neutral-200 bg-white px-4 text-[15px] text-neutral-900"
+                  className="h-12 rounded-full border bg-white px-4 text-[15px] text-neutral-900"
+                  style={{
+                    borderColor: phoneError ? '#dc2626' : '#e5e5e5',
+                    borderWidth: 1,
+                  }}
                 />
               </View>
             </View>
+            {phoneError ? (
+              <Text className="mt-1.5 text-xs text-red-600">{phoneError}</Text>
+            ) : null}
 
             <Text className="mt-2 text-xs leading-5 text-neutral-500">
               Ce site est protégé par reCAPTCHA. Consultez notre{' '}
@@ -492,15 +618,20 @@ export default function GhilaSignup({ onClose, onAuthenticated }) {
             <View className="gap-3">
               <Pressable
                 onPress={handleGoogle}
+                disabled={oauthBusyProvider !== null}
                 className="h-[52px] flex-row items-center justify-center gap-3 rounded-full border border-neutral-200 bg-white active:bg-neutral-50"
               >
                 <GoogleLogo size={22} />
                 <Text className="text-[15px] font-semibold text-neutral-800">
                   Google
                 </Text>
+                {oauthBusyProvider === 'google' ? (
+                  <ActivityIndicator color="#4285F4" />
+                ) : null}
               </Pressable>
               <Pressable
                 onPress={handleFacebook}
+                disabled={oauthBusyProvider !== null}
                 className="h-[52px] flex-row items-center justify-center gap-3 rounded-full border border-neutral-200 bg-white active:bg-neutral-50"
               >
                 <View className="h-8 w-8 items-center justify-center rounded-full bg-[#1877F2]">
@@ -509,9 +640,21 @@ export default function GhilaSignup({ onClose, onAuthenticated }) {
                 <Text className="text-[15px] font-semibold text-neutral-800">
                   Facebook
                 </Text>
+                {oauthBusyProvider === 'facebook' ? (
+                  <ActivityIndicator color="#1877F2" />
+                ) : null}
               </Pressable>
               <Pressable
-                onPress={() => setEmailModalOpen(true)}
+                onPress={() => {
+                  setSignupEmailErr('');
+                  setSignupPasswordErr('');
+                  setSignupConfirmErr('');
+                  setEmailServerErr('');
+                  setEmailServerNotice('');
+                  setEmailSignupSuccess(false);
+                  setEmailDoneEmail('');
+                  setEmailModalOpen(true);
+                }}
                 className="h-[52px] flex-row items-center justify-center gap-3 rounded-full border border-neutral-200 bg-white active:bg-neutral-50"
               >
                 <Ionicons name="mail-outline" size={22} color="#404040" />
@@ -520,6 +663,9 @@ export default function GhilaSignup({ onClose, onAuthenticated }) {
                 </Text>
               </Pressable>
             </View>
+            {oauthError ? (
+              <Text className="mt-2 text-center text-xs text-red-600">{oauthError}</Text>
+            ) : null}
 
             <Text className="mt-10 text-center text-xs leading-5 text-neutral-500">
               En continuant, vous acceptez nos{' '}
@@ -601,253 +747,105 @@ export default function GhilaSignup({ onClose, onAuthenticated }) {
         >
           <Pressable className="flex-1" onPress={() => setOtpModalOpen(false)} />
           <View className="rounded-t-3xl bg-white px-5 pb-8 pt-4">
-            <View className="mb-3 flex-row items-center justify-between">
-              <Text className="text-lg font-bold text-neutral-900">
-                Code WhatsApp
-              </Text>
-              <Pressable
-                onPress={() => setOtpModalOpen(false)}
-                hitSlop={10}
-                className="h-10 w-10 items-center justify-center rounded-full bg-neutral-100"
-              >
-                <Text className="text-2xl text-neutral-700">×</Text>
-              </Pressable>
-            </View>
-            <Text className="mb-1 text-sm text-neutral-600">
-              Saisissez le code à 6 chiffres envoyé au{' '}
-              <Text className="font-semibold text-neutral-900">
-                {otpPhoneE164 || fullNumberDisplay}
-              </Text>
-              .
-            </Text>
-            <View
-              className="mb-4 rounded-xl border border-dashed border-neutral-300 bg-neutral-50 px-3 py-2"
-            >
-              <Text className="text-xs text-neutral-500">
-                Mode démo : le code est généré dans l’app (pas de SMS réel).
-                Code actuel :{' '}
-                <Text className="font-mono text-base font-bold text-neutral-900">
-                  {expectedOtp || '------'}
+            {otpSuccess ? (
+              <View className="items-center py-8">
+                <Ionicons name="checkmark-circle" size={72} color={GHILA_GREEN} />
+                <Text className="mt-4 text-center text-lg font-bold text-neutral-900">
+                  Connexion réussie
                 </Text>
-              </Text>
-            </View>
-            <TextInput
-              value={otpCode}
-              onChangeText={(t) => setOtpCode(t.replace(/\D/g, '').slice(0, 6))}
-              placeholder="000000"
-              placeholderTextColor="#a3a3a3"
-              keyboardType="number-pad"
-              maxLength={6}
-              className="mb-4 h-14 rounded-xl border border-neutral-200 px-3 text-center text-2xl font-semibold tracking-widest text-neutral-900"
-            />
-            <Pressable
-              onPress={handleVerifyOtp}
-              className="mb-3 h-12 items-center justify-center rounded-full active:opacity-90"
-              style={{ backgroundColor: GHILA_GREEN }}
-            >
-              <Text className="text-base font-bold text-white">
-                Vérifier le code
-              </Text>
-            </Pressable>
-            <Pressable
-              onPress={handleResendOtp}
-              disabled={resendSec > 0 || waSending}
-              className="items-center py-2"
-            >
-              <Text
-                className="text-sm font-medium"
-                style={{
-                  color: resendSec > 0 || waSending ? '#a3a3a3' : GHILA_GREEN,
-                }}
-              >
-                {resendSec > 0
-                  ? `Renvoyer le code (${resendSec}s)`
-                  : 'Renvoyer le code'}
-              </Text>
-            </Pressable>
-            <Pressable
-              onPress={openWhatsAppChat}
-              className="mt-2 items-center py-2"
-            >
-              <Text
-                className="text-sm font-semibold"
-                style={{ color: GHILA_GREEN }}
-              >
-                Ouvrir WhatsApp avec ce numéro
-              </Text>
-            </Pressable>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
-
-      {/* Modal Google — saisie + navigateur + finalisation (démo) */}
-      <Modal
-        visible={googleModalOpen}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setGoogleModalOpen(false)}
-      >
-        <KeyboardAvoidingView
-          className="flex-1 justify-end bg-black/50"
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        >
-          <Pressable
-            className="flex-1"
-            onPress={() => setGoogleModalOpen(false)}
-          />
-          <View className="rounded-t-3xl bg-white px-5 pb-8 pt-4">
-            <View className="mb-3 flex-row items-center justify-between">
-              <View className="flex-row items-center gap-2">
-                <GoogleLogo size={28} />
-                <Text className="text-lg font-bold text-neutral-900">
-                  Google
+                <Text className="mt-2 text-center text-sm text-neutral-600">
+                  {otpPhoneE164}
                 </Text>
               </View>
-              <Pressable
-                onPress={() => setGoogleModalOpen(false)}
-                hitSlop={10}
-                className="h-10 w-10 items-center justify-center rounded-full bg-neutral-100"
-              >
-                <Text className="text-2xl text-neutral-700">×</Text>
-              </Pressable>
-            </View>
-            <Text className="mb-3 text-sm leading-5 text-neutral-600">
-              Saisissez l’e-mail du compte Google, puis finalisez. Vous pouvez
-              aussi ouvrir la page de connexion Google dans le navigateur.
-            </Text>
-            <TextInput
-              value={googleAccountEmail}
-              onChangeText={(t) => {
-                setGoogleAccountEmail(t);
-                if (googleFieldError) setGoogleFieldError('');
-              }}
-              placeholder="vous@gmail.com"
-              placeholderTextColor="#a3a3a3"
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoCorrect={false}
-              className="mb-1 h-12 rounded-xl border px-3 text-[15px] text-neutral-900"
-              style={{
-                borderColor: googleFieldError ? '#dc2626' : '#e5e5e5',
-                borderWidth: 1,
-              }}
-            />
-            <View className="mb-2 min-h-[18px]">
-              {googleFieldError ? (
-                <Text className="text-xs text-red-600">{googleFieldError}</Text>
-              ) : null}
-            </View>
-            <Pressable
-              onPress={handleGoogleOpenBrowser}
-              className="mb-3 h-11 items-center justify-center rounded-full border border-neutral-200 bg-white active:bg-neutral-50"
-            >
-              <Text className="text-sm font-semibold text-neutral-800">
-                Ouvrir Google dans le navigateur
-              </Text>
-            </Pressable>
-            <Pressable
-              onPress={() => void handleGoogleFinish()}
-              disabled={googleOAuthBusy}
-              className="h-12 flex-row items-center justify-center gap-2 rounded-full active:opacity-90"
-              style={{
-                backgroundColor: '#4285F4',
-                opacity: googleOAuthBusy ? 0.85 : 1,
-              }}
-            >
-              {googleOAuthBusy ? (
-                <ActivityIndicator color="#FFFFFF" />
-              ) : null}
-              <Text className="text-base font-bold text-white">
-                Continuer avec Google
-              </Text>
-            </Pressable>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
-
-      {/* Modal Facebook — même principe */}
-      <Modal
-        visible={facebookModalOpen}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setFacebookModalOpen(false)}
-      >
-        <KeyboardAvoidingView
-          className="flex-1 justify-end bg-black/50"
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        >
-          <Pressable
-            className="flex-1"
-            onPress={() => setFacebookModalOpen(false)}
-          />
-          <View className="rounded-t-3xl bg-white px-5 pb-8 pt-4">
-            <View className="mb-3 flex-row items-center justify-between">
-              <View className="flex-row items-center gap-2">
-                <View className="h-9 w-9 items-center justify-center rounded-full bg-[#1877F2]">
-                  <Ionicons name="logo-facebook" size={22} color="#FFFFFF" />
+            ) : (
+              <>
+                <View className="mb-3 flex-row items-center justify-between">
+                  <Text className="text-lg font-bold text-neutral-900">
+                    Code WhatsApp
+                  </Text>
+                  <Pressable
+                    onPress={() => setOtpModalOpen(false)}
+                    hitSlop={10}
+                    className="h-10 w-10 items-center justify-center rounded-full bg-neutral-100"
+                  >
+                    <Text className="text-2xl text-neutral-700">×</Text>
+                  </Pressable>
                 </View>
-                <Text className="text-lg font-bold text-neutral-900">
-                  Facebook
+                <Text className="mb-1 text-sm text-neutral-600">
+                  Saisissez le code à 6 chiffres pour{' '}
+                  <Text className="font-semibold text-neutral-900">
+                    {otpPhoneE164 || fullNumberDisplay}
+                  </Text>
+                  .
                 </Text>
-              </View>
-              <Pressable
-                onPress={() => setFacebookModalOpen(false)}
-                hitSlop={10}
-                className="h-10 w-10 items-center justify-center rounded-full bg-neutral-100"
-              >
-                <Text className="text-2xl text-neutral-700">×</Text>
-              </Pressable>
-            </View>
-            <Text className="mb-3 text-sm leading-5 text-neutral-600">
-              Saisissez l’e-mail lié à votre compte Facebook, puis finalisez.
-              Vous pouvez aussi ouvrir Facebook dans le navigateur.
-            </Text>
-            <TextInput
-              value={facebookAccountEmail}
-              onChangeText={(t) => {
-                setFacebookAccountEmail(t);
-                if (facebookFieldError) setFacebookFieldError('');
-              }}
-              placeholder="vous@exemple.com"
-              placeholderTextColor="#a3a3a3"
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoCorrect={false}
-              className="mb-1 h-12 rounded-xl border px-3 text-[15px] text-neutral-900"
-              style={{
-                borderColor: facebookFieldError ? '#dc2626' : '#e5e5e5',
-                borderWidth: 1,
-              }}
-            />
-            <View className="mb-2 min-h-[18px]">
-              {facebookFieldError ? (
-                <Text className="text-xs text-red-600">{facebookFieldError}</Text>
-              ) : null}
-            </View>
-            <Pressable
-              onPress={handleFacebookOpenBrowser}
-              className="mb-3 h-11 items-center justify-center rounded-full border border-neutral-200 bg-white active:bg-neutral-50"
-            >
-              <Text className="text-sm font-semibold text-neutral-800">
-                Ouvrir Facebook dans le navigateur
-              </Text>
-            </Pressable>
-            <Pressable
-              onPress={() => void handleFacebookFinish()}
-              disabled={facebookOAuthBusy}
-              className="h-12 flex-row items-center justify-center gap-2 rounded-full active:opacity-90"
-              style={{
-                backgroundColor: '#1877F2',
-                opacity: facebookOAuthBusy ? 0.85 : 1,
-              }}
-            >
-              {facebookOAuthBusy ? (
-                <ActivityIndicator color="#FFFFFF" />
-              ) : null}
-              <Text className="text-base font-bold text-white">
-                Continuer avec Facebook
-              </Text>
-            </Pressable>
+                <View className="mb-4 rounded-xl border border-dashed border-neutral-300 bg-neutral-50 px-3 py-2">
+                  <Text className="text-xs text-neutral-500">
+                    Mode démo : code affiché ici (pas de SMS réel). Code :{' '}
+                    <Text className="font-mono text-base font-bold text-neutral-900">
+                      {expectedOtp || '------'}
+                    </Text>
+                  </Text>
+                </View>
+                <TextInput
+                  value={otpCode}
+                  onChangeText={(t) => {
+                    setOtpCode(t.replace(/\D/g, '').slice(0, 6));
+                    if (otpError) setOtpError('');
+                  }}
+                  placeholder="000000"
+                  placeholderTextColor="#a3a3a3"
+                  keyboardType="number-pad"
+                  maxLength={6}
+                  className="mb-1 h-14 rounded-xl border px-3 text-center text-2xl font-semibold tracking-widest text-neutral-900"
+                  style={{
+                    borderColor: otpError ? '#dc2626' : '#e5e5e5',
+                    borderWidth: 1,
+                  }}
+                />
+                {otpError ? (
+                  <Text className="mb-3 text-xs text-red-600">{otpError}</Text>
+                ) : (
+                  <View className="mb-3" />
+                )}
+                <Pressable
+                  onPress={handleVerifyOtp}
+                  className="mb-3 h-12 items-center justify-center rounded-full active:opacity-90"
+                  style={{ backgroundColor: GHILA_GREEN }}
+                >
+                  <Text className="text-base font-bold text-white">
+                    Vérifier le code
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={handleResendOtp}
+                  disabled={resendSec > 0 || waSending}
+                  className="items-center py-2"
+                >
+                  <Text
+                    className="text-sm font-medium"
+                    style={{
+                      color:
+                        resendSec > 0 || waSending ? '#a3a3a3' : GHILA_GREEN,
+                    }}
+                  >
+                    {resendSec > 0
+                      ? `Renvoyer le code (${resendSec}s)`
+                      : 'Renvoyer le code'}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={openWhatsAppChat}
+                  className="mt-2 items-center py-2"
+                >
+                  <Text
+                    className="text-sm font-semibold"
+                    style={{ color: GHILA_GREEN }}
+                  >
+                    Ouvrir WhatsApp avec ce numéro
+                  </Text>
+                </Pressable>
+              </>
+            )}
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -870,7 +868,7 @@ export default function GhilaSignup({ onClose, onAuthenticated }) {
           <View className="rounded-t-3xl bg-white px-5 pb-8 pt-4">
             <View className="mb-4 flex-row items-center justify-between">
               <Text className="text-lg font-bold text-neutral-900">
-                S&apos;inscrire par e-mail
+                Compte e-mail sécurisé
               </Text>
               <Pressable
                 onPress={() => setEmailModalOpen(false)}
@@ -880,42 +878,124 @@ export default function GhilaSignup({ onClose, onAuthenticated }) {
                 <Text className="text-2xl text-neutral-700">×</Text>
               </Pressable>
             </View>
-            <Text className="mb-3 text-sm text-neutral-600">
-              E-mail valide, mot de passe d&apos;au moins 8 caractères, puis
-              confirmation.
-            </Text>
-            <TextInput
-              value={email}
-              onChangeText={setEmail}
-              placeholder="E-mail"
-              placeholderTextColor="#a3a3a3"
-              keyboardType="email-address"
-              autoCapitalize="none"
-              className="mb-3 h-12 rounded-xl border border-neutral-200 px-3 text-[15px] text-neutral-900"
-            />
-            <TextInput
-              value={password}
-              onChangeText={setPassword}
-              placeholder="Mot de passe"
-              placeholderTextColor="#a3a3a3"
-              secureTextEntry
-              className="mb-3 h-12 rounded-xl border border-neutral-200 px-3 text-[15px] text-neutral-900"
-            />
-            <TextInput
-              value={confirmPassword}
-              onChangeText={setConfirmPassword}
-              placeholder="Confirmer le mot de passe"
-              placeholderTextColor="#a3a3a3"
-              secureTextEntry
-              className="mb-5 h-12 rounded-xl border border-neutral-200 px-3 text-[15px] text-neutral-900"
-            />
-            <Pressable
-              onPress={handleEmailSignup}
-              className="h-12 items-center justify-center rounded-full active:opacity-90"
-              style={{ backgroundColor: GHILA_GREEN }}
-            >
-              <Text className="text-base font-bold text-white">S&apos;inscrire</Text>
-            </Pressable>
+            {emailSignupSuccess ? (
+              <View className="items-center py-8">
+                <Ionicons name="checkmark-circle" size={72} color={GHILA_GREEN} />
+                <Text className="mt-4 text-center text-lg font-bold text-neutral-900">
+                  Compte créé
+                </Text>
+                <Text className="mt-2 text-center text-sm text-neutral-600">
+                  {emailDoneEmail}
+                </Text>
+              </View>
+            ) : (
+              <>
+                <Text className="mb-3 text-sm text-neutral-600">
+                  Inscription sécurisée : un lien de vérification est envoyé.
+                  Tant que l&apos;e-mail n&apos;est pas confirmé, la connexion est refusée.
+                </Text>
+                <TextInput
+                  value={email}
+                  onChangeText={(t) => {
+                    setEmail(t);
+                    if (signupEmailErr) setSignupEmailErr('');
+                    if (emailServerErr) setEmailServerErr('');
+                    if (emailServerNotice) setEmailServerNotice('');
+                  }}
+                  placeholder="E-mail"
+                  placeholderTextColor="#a3a3a3"
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  className="mb-1 h-12 rounded-xl border px-3 text-[15px] text-neutral-900"
+                  style={{
+                    borderColor: signupEmailErr ? '#dc2626' : '#e5e5e5',
+                    borderWidth: 1,
+                  }}
+                />
+                <View className="mb-2 min-h-[18px]">
+                  {signupEmailErr ? (
+                    <Text className="text-xs text-red-600">{signupEmailErr}</Text>
+                  ) : null}
+                </View>
+                <TextInput
+                  value={password}
+                  onChangeText={(t) => {
+                    setPassword(t);
+                    if (signupPasswordErr) setSignupPasswordErr('');
+                    if (emailServerErr) setEmailServerErr('');
+                  }}
+                  placeholder="Mot de passe"
+                  placeholderTextColor="#a3a3a3"
+                  secureTextEntry
+                  className="mb-1 h-12 rounded-xl border px-3 text-[15px] text-neutral-900"
+                  style={{
+                    borderColor: signupPasswordErr ? '#dc2626' : '#e5e5e5',
+                    borderWidth: 1,
+                  }}
+                />
+                <View className="mb-2 min-h-[18px]">
+                  {signupPasswordErr ? (
+                    <Text className="text-xs text-red-600">{signupPasswordErr}</Text>
+                  ) : null}
+                </View>
+                <TextInput
+                  value={confirmPassword}
+                  onChangeText={(t) => {
+                    setConfirmPassword(t);
+                    if (signupConfirmErr) setSignupConfirmErr('');
+                    if (emailServerErr) setEmailServerErr('');
+                  }}
+                  placeholder="Confirmer le mot de passe"
+                  placeholderTextColor="#a3a3a3"
+                  secureTextEntry
+                  className="mb-1 h-12 rounded-xl border px-3 text-[15px] text-neutral-900"
+                  style={{
+                    borderColor: signupConfirmErr ? '#dc2626' : '#e5e5e5',
+                    borderWidth: 1,
+                  }}
+                />
+                <View className="mb-4 min-h-[18px]">
+                  {signupConfirmErr ? (
+                    <Text className="text-xs text-red-600">{signupConfirmErr}</Text>
+                  ) : null}
+                </View>
+                {emailServerErr ? (
+                  <Text className="mb-3 text-xs text-red-600">{emailServerErr}</Text>
+                ) : null}
+                {emailServerNotice ? (
+                  <Text className="mb-3 text-xs text-emerald-700">{emailServerNotice}</Text>
+                ) : null}
+                <Pressable
+                  onPress={() => void handleEmailSignup()}
+                  disabled={emailSignupBusy}
+                  className="h-12 flex-row items-center justify-center gap-2 rounded-full active:opacity-90"
+                  style={{
+                    backgroundColor: GHILA_GREEN,
+                    opacity: emailSignupBusy ? 0.85 : 1,
+                  }}
+                >
+                  {emailSignupBusy ? (
+                    <ActivityIndicator color="#FFFFFF" />
+                  ) : null}
+                  <Text className="text-base font-bold text-white">
+                    S&apos;inscrire (envoyer vérification)
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => void handleEmailLoginVerified()}
+                  disabled={emailLoginBusy}
+                  className="mt-3 h-12 flex-row items-center justify-center gap-2 rounded-full border border-neutral-300 bg-white active:bg-neutral-50"
+                  style={{ opacity: emailLoginBusy ? 0.85 : 1 }}
+                >
+                  {emailLoginBusy ? (
+                    <ActivityIndicator color={GHILA_GREEN} />
+                  ) : null}
+                  <Text className="text-base font-semibold text-neutral-800">
+                    Se connecter (e-mail vérifié)
+                  </Text>
+                </Pressable>
+              </>
+            )}
           </View>
         </KeyboardAvoidingView>
       </Modal>

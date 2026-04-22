@@ -6,20 +6,31 @@ type Props = {
   size?: 'md' | 'lg';
 };
 
+/** Logo initial : pastille lime (squircle), épingle vert forêt — sans image PNG. */
 export function GhilaLogo({ size = 'lg' }: Props) {
   const box = size === 'lg' ? 88 : 64;
-  const icon = size === 'lg' ? 40 : 30;
+  const pinSize = size === 'lg' ? 40 : 30;
+  const r = Math.round(box * 0.26);
 
   return (
-    <View style={[styles.wrap, { width: box, height: box, borderRadius: box * 0.26 }]}>
-      <Ionicons name="location" size={icon} color={colors.bgDeep} />
+    <View
+      style={[
+        styles.wrap,
+        {
+          width: box,
+          height: box,
+          borderRadius: r,
+          backgroundColor: colors.accent,
+        },
+      ]}
+    >
+      <Ionicons name="location" size={pinSize} color={colors.bgDeep} accessibilityLabel="Ghila" />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   wrap: {
-    backgroundColor: colors.accent,
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#000',
